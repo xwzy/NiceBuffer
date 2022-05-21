@@ -11,10 +11,11 @@ template<typename T>
 class NiceBuffer final {
 public:
     NiceBuffer() {
-        idx = 0;
-        buffer0 = new unordered_map<string, T>{};
-        buffer1 = new unordered_map<string, T>{};
-//        std::cout << "buffer0:" << buffer0 << ", buffer1:" << buffer1 << std::endl;
+        idx_ = 0;
+        buffer0_ = new unordered_map<string, T>{};
+        buffer1_ = new unordered_map<string, T>{};
+        std::cout << idx_.is_lock_free() << std::endl;
+//        std::cout << "buffer0_:" << buffer0_ << ", buffer1_:" << buffer1_ << std::endl;
     }
 
     ~NiceBuffer() = default;
@@ -26,43 +27,45 @@ public:
 public:
 //    explicit NiceBuffer(int x) : a(x) {}
 //    NiceBuffer() : NiceBuffer(0)  {}
+    int get(const string &key, T &value);
 
     int update(const string &key, const T &value);
 
+    bool can_update();
+
+    int start_update();
+
     int finish_update();
 
-    int get(const string &key, T &value);
-
-
 private:
-    volatile std::atomic<int> idx = {0};
-    unordered_map<string, T> *buffer0;
-    unordered_map<string, T> *buffer1;
+    volatile std::atomic<int> idx_ = {0};
+    volatile std::atomic<bool> is_updating_ = {false};
+    unordered_map<string, T> *buffer0_;
+    unordered_map<string, T> *buffer1_;
 
     unordered_map<string, T> *get_current_map();
 
     unordered_map<string, T> *get_update_map();
-
 };
 
 
 template<typename T>
 unordered_map<string, T> *NiceBuffer<T>::get_update_map() {
-//    std::cout << "get_update_map idx: " << idx.load() << std::endl;
-    if (idx.load() == 0) {
-        return buffer1;
+//    std::cout << "get_update_map idx_: " << idx_.load() << std::endl;
+    if (idx_.load() == 0) {
+        return buffer1_;
     } else {
-        return buffer0;
+        return buffer0_;
     }
 }
 
 template<typename T>
 unordered_map<string, T> *NiceBuffer<T>::get_current_map() {
-//    std::cout << "get_current_map idx: " << idx.load() << std::endl;
-    if (idx.load() == 0) {
-        return buffer0;
+//    std::cout << "get_current_map idx_: " << idx_.load() << std::endl;
+    if (idx_.load() == 0) {
+        return buffer0_;
     } else {
-        return buffer1;
+        return buffer1_;
     }
 }
 
@@ -90,14 +93,26 @@ int NiceBuffer<T>::get(const string &key, T &value) {
 
 template<typename T>
 int NiceBuffer<T>::finish_update() {
-//    std::cout << "before idx=" << idx.load() << std::endl;
-    if (idx.load() == 0) {
-        idx.store(1);
+//    std::cout << "before idx_=" << idx_.load() << std::endl;
+    if (idx_.load() == 0) {
+        idx_.store(1);
     } else {
-        idx.store(0);
+        idx_.store(0);
     }
-//    std::cout << "after idx=" << idx.load() << std::endl;
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+//    std::cout << "after idx_=" << idx_.load() << std::endl;
+    is_updating_.store(false);
+    std::this_thread::sleep_for(std::chrono::seconds(5));
+    return 0;
+}
+
+template<typename T>
+bool NiceBuffer<T>::can_update() {
+    return !is_updating_.load();
+}
+
+template<typename T>
+int NiceBuffer<T>::start_update() {
+    is_updating_.store(true);
     return 0;
 }
 
@@ -109,16 +124,20 @@ void update_worker(NiceBuffer<double> *nb) {
     while (1) {
         std::time_t now = std::time(0);
 //        std::cout << now << "  " << pre_update_time << std::endl;
-        if (now % 10 == 0 && now - pre_update_time > 9) {
+        if ((now % 10 == 0) && (now - pre_update_time > 9) && (nb->can_update())) {
+            nb->start_update();
             for (int i = 0; i < 1000; i++) {
                 auto key = std::to_string(i);
                 nb->update("k" + key, k * (count++));
             }
             k *= -1;
-            nb->finish_update();
             pre_update_time = now;
+            nb->finish_update();
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+        if (now < 0) {
+            break;
         }
     }
 
